@@ -1,0 +1,10 @@
+node_modules/
+
+*.sqlite-shm
+*.sqlite-wal
+*test*.sqlite
+*teste*.sqlite
+
+.netlify/
+.env
+.env.*
