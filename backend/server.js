@@ -13,17 +13,52 @@ try {
     XLSX = null;
 }
 
-const rootDir = path.resolve(__dirname, '..', '..');
+const projectDir = path.resolve(__dirname, '..');
+const legacyRootDir = path.resolve(__dirname, '..', '..');
 const frontendDir = path.resolve(__dirname, '..', 'frontend');
-const bancoPath = process.env.LEADBENEFITS_DB || path.join(rootDir, 'LeadBenefits.sqlite');
-const prospeccoesPath = process.env.LEADBENEFITS_PROSPECCOES_DB || path.join(__dirname, '..', 'prospeccoes.sqlite');
-const importacaoPath = process.env.LEADBENEFITS_IMPORTACAO_DB || path.join(__dirname, '..', 'CRM_importacao.sqlite');
+const dataDir = process.env.LEADBENEFITS_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || projectDir;
+const defaultBancoPath = fs.existsSync(path.join(projectDir, 'LeadBenefits.sqlite'))
+    ? path.join(projectDir, 'LeadBenefits.sqlite')
+    : path.join(legacyRootDir, 'LeadBenefits.sqlite');
+const bancoPath = process.env.LEADBENEFITS_DB || defaultBancoPath;
+const prospeccoesPath = process.env.LEADBENEFITS_PROSPECCOES_DB || path.join(dataDir, 'prospeccoes.sqlite');
+const importacaoPath = process.env.LEADBENEFITS_IMPORTACAO_DB || path.join(dataDir, 'CRM_importacao.sqlite');
 const port = Number(process.env.PORT || 3000);
-const db = new Database(bancoPath, { readonly: true });
+
+function ensureDatabaseDirectory(databasePath) {
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+}
+
+function prepareWritableDatabase(databasePath, bundledFileName) {
+    ensureDatabaseDirectory(databasePath);
+
+    const bundledPath = path.join(projectDir, bundledFileName);
+    const resolvedDatabasePath = path.resolve(databasePath);
+    const resolvedBundledPath = path.resolve(bundledPath);
+
+    if (
+        resolvedDatabasePath !== resolvedBundledPath
+        && !fs.existsSync(resolvedDatabasePath)
+        && fs.existsSync(resolvedBundledPath)
+    ) {
+        fs.copyFileSync(resolvedBundledPath, resolvedDatabasePath);
+    }
+}
+
+prepareWritableDatabase(prospeccoesPath, 'prospeccoes.sqlite');
+prepareWritableDatabase(importacaoPath, 'CRM_importacao.sqlite');
+
+const db = fs.existsSync(bancoPath)
+    ? new Database(bancoPath, { readonly: true, fileMustExist: true })
+    : null;
 const prospeccoesDb = new Database(prospeccoesPath);
 const importacaoDb = new Database(importacaoPath);
 
-db.pragma('query_only = ON');
+if (db) {
+    db.pragma('query_only = ON');
+} else {
+    console.warn(`Banco principal nao encontrado em ${bancoPath}. Rotas de pesquisa ficarao indisponiveis.`);
+}
 prospeccoesDb.pragma('journal_mode = WAL');
 importacaoDb.pragma('journal_mode = WAL');
 prospeccoesDb.exec(`
@@ -163,7 +198,9 @@ function ensureImportacaoSchema() {
 
 ensureImportacaoSchema();
 
-db.prepare('ATTACH DATABASE ? AS crm').run(prospeccoesPath);
+if (db) {
+    db.prepare('ATTACH DATABASE ? AS crm').run(prospeccoesPath);
+}
 
 const contentTypes = {
     '.html': 'text/html; charset=utf-8',
@@ -190,6 +227,19 @@ function json(res, status, body) {
     });
 
     res.end(data);
+}
+
+function requireMainDatabase(res) {
+    if (db) {
+        return true;
+    }
+
+    json(res, 503, {
+        error: 'Banco principal LeadBenefits.sqlite nao encontrado no servidor.',
+        database: bancoPath,
+        hint: 'Envie o arquivo para o deploy/volume ou configure LEADBENEFITS_DB com o caminho correto.'
+    });
+    return false;
 }
 
 function parseBooleanFlag(value) {
@@ -749,6 +799,10 @@ function buildDashboardContact(row, history) {
 function dashboardHandler(req, res, url) {
     if (req.method !== 'GET') {
         json(res, 405, { error: 'Metodo nao permitido.' });
+        return;
+    }
+
+    if (!requireMainDatabase(res)) {
         return;
     }
 
@@ -2330,6 +2384,10 @@ async function exportCompaniesXls(req, res) {
         return;
     }
 
+    if (!requireMainDatabase(res)) {
+        return;
+    }
+
     const body = await readJsonBody(req);
     const cnpjs = Array.from(new Set(
         (Array.isArray(body.cnpjs) ? body.cnpjs : [])
@@ -2408,6 +2466,10 @@ async function exportCompaniesXls(req, res) {
 }
 
 function searchCompanies(req, res, url) {
+    if (!requireMainDatabase(res)) {
+        return;
+    }
+
     const start = Date.now();
 
     if (url.searchParams.has('draw')) {
@@ -2449,27 +2511,42 @@ function searchCompaniesDataTable(res, url, start) {
 }
 
 function health(res) {
-    const counts = db.prepare(`
-        SELECT
-            (SELECT COUNT(*) FROM EMPRESAS) AS empresas,
-            (SELECT COUNT(*) FROM ESTABELECIMENTOS) AS estabelecimentos,
-            (SELECT COUNT(*) FROM SIMPLES) AS simples
-    `).get();
+    const counts = db
+        ? db.prepare(`
+            SELECT
+                (SELECT COUNT(*) FROM EMPRESAS) AS empresas,
+                (SELECT COUNT(*) FROM ESTABELECIMENTOS) AS estabelecimentos,
+                (SELECT COUNT(*) FROM SIMPLES) AS simples
+        `).get()
+        : null;
 
     json(res, 200, {
         ok: true,
         database: bancoPath,
+        databaseAvailable: Boolean(db),
+        writableDatabases: {
+            prospeccoes: prospeccoesPath,
+            importacao: importacaoPath
+        },
         counts
     });
 }
 
 function listMunicipiosHandler(res, url) {
+    if (!requireMainDatabase(res)) {
+        return;
+    }
+
     const uf = url.searchParams.get('uf');
     const q = url.searchParams.get('q');
     json(res, 200, listMunicipios(uf, q));
 }
 
 function listCnaesHandler(res, url) {
+    if (!requireMainDatabase(res)) {
+        return;
+    }
+
     const q = url.searchParams.get('q');
     json(res, 200, listCnaes(q));
 }
@@ -2574,7 +2651,9 @@ server.listen(port, () => {
 });
 
 process.on('SIGINT', () => {
-    db.close();
+    if (db) {
+        db.close();
+    }
     prospeccoesDb.close();
     importacaoDb.close();
     server.close(() => process.exit(0));
