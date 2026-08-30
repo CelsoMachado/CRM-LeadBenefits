@@ -1,13 +1,15 @@
 {
-  "name": "leadbenefits-crm",
+  "name": "leadbenefits-crm-importacao-empresas",
   "version": "1.0.0",
   "private": true,
-  "engines": {
-    "node": ">=22"
-  },
+  "type": "commonjs",
+  "main": "backend/server.js",
   "scripts": {
-    "start": "node crm_importacao_empresas/backend/server.js",
-    "check": "node --check crm_importacao_empresas/backend/server.js && node --check crm_importacao_empresas/frontend/app.js && node --check netlify/functions/api.js"
+    "start": "node backend/server.js",
+    "check": "node --check backend/server.js"
+  },
+  "engines": {
+    "node": "22.x"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

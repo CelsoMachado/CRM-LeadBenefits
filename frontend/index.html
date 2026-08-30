@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LeadBenefits CRM</title>
+    <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css">
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <main class="app">
+        <header class="topbar">
+            <div class="brand">
+                <span class="mark">LB</span>
+                <div>
+                    <h1>LeadBenefits</h1>
+                    <p>Pesquisa CNPJ</p>
+                </div>
+            </div>
+            <nav class="main-menu" aria-label="Menu principal">
+                <a class="ghost-button menu-home-link" href="#inicio">Inicio</a>
+                <div class="menu-dropdown">
+                    <button class="ghost-button topbar-action" type="button" aria-expanded="false">
+                        <span>Empresas</span>
+                        <span class="advanced-search-arrow" aria-hidden="true"></span>
+                    </button>
+                    <div class="menu-dropdown-list" role="menu">
+                        <a href="#pesquisa-avancada" role="menuitem">Pesquisa avancada</a>
+                        <a href="#empresas/cadastrar" role="menuitem">Cadastrar empresas</a>
+                        <a href="#empresas/importacao" role="menuitem">Importacao</a>
+                    </div>
+                </div>
+            </nav>
+            <button id="advanced-search-toggle" class="ghost-button topbar-action is-menu-hidden" type="button" aria-expanded="false" aria-controls="advanced-search-panel">
+                <span>Pesquisa Avançada</span>
+                <span class="advanced-search-arrow" aria-hidden="true"></span>
+            </button>
+        </header>
+
+        <section class="dashboard-panel main-crm-view" aria-label="Painel administrativo">
+            <div class="dashboard-metrics">
+                <article class="dashboard-card">
+                    <span>Cadastros no banco</span>
+                    <strong id="dashboard-total-cadastros">-</strong>
+                    <small>Total disponivel para pesquisa</small>
+                </article>
+
+                <article class="dashboard-card dashboard-card-wide">
+                    <span>Operacao do mes</span>
+                    <div class="dashboard-card-metrics">
+                        <div>
+                            <strong id="dashboard-trabalhados-mes">-</strong>
+                            <small>Com ligacao registrada</small>
+                        </div>
+                        <div>
+                            <strong id="dashboard-leads-negociacao">-</strong>
+                            <small>Leads em proposta/negociacao</small>
+                        </div>
+                    </div>
+                </article>
+            </div>
+
+            <section class="dashboard-agenda" aria-label="Agenda de contatos">
+                <header class="dashboard-agenda-header">
+                    <div>
+                        <strong>Agenda de contatos</strong>
+                        <span id="dashboard-updated-at">Carregando painel...</span>
+                    </div>
+                    <div class="dashboard-agenda-actions">
+                        <button id="manual-company-open" class="ghost-button" type="button">Cadastrar empresa</button>
+                        <button id="dashboard-refresh" class="ghost-button" type="button">Atualizar</button>
+                    </div>
+                </header>
+
+                <div class="dashboard-contact-groups">
+                    <article class="dashboard-contact-group is-overdue">
+                        <header>
+                            <div class="dashboard-group-title">
+                                <strong>Atrasados</strong>
+                                <span id="dashboard-atrasados-count">0</span>
+                                <button id="dashboard-atrasados-all" class="dashboard-header-eye dashboard-header-eye-action" type="button" title="Ver todos" aria-label="Ver todos os contatos atrasados">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                        </header>
+                        <div id="dashboard-atrasados-list" class="dashboard-contact-list"></div>
+                    </article>
+
+                    <article class="dashboard-contact-group is-today">
+                        <header>
+                            <div class="dashboard-group-title">
+                                <strong>Hoje</strong>
+                                <span id="dashboard-hoje-count">0</span>
+                                <span class="dashboard-header-eye" title="Visualizar contatos de hoje" aria-label="Visualizar contatos de hoje" role="img">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </span>
+                            </div>
+                        </header>
+                        <div id="dashboard-hoje-list" class="dashboard-contact-list"></div>
+                    </article>
+
+                    <article class="dashboard-contact-group is-tomorrow">
+                        <header>
+                            <div class="dashboard-group-title">
+                                <strong>Amanha</strong>
+                                <span id="dashboard-amanha-count">0</span>
+                                <span class="dashboard-header-eye" title="Visualizar contatos de amanha" aria-label="Visualizar contatos de amanha" role="img">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </span>
+                            </div>
+                        </header>
+                        <div id="dashboard-amanha-list" class="dashboard-contact-list"></div>
+                    </article>
+                </div>
+            </section>
+        </section>
+
+        <section id="empresas-importacao-page" class="module-page" hidden>
+            <header class="module-page-header">
+                <div>
+                    <strong>Importacao de empresas</strong>
+                    <span>Arquivos XLSX ou CSV gravados no banco CRM_importacao.sqlite</span>
+                </div>
+                <div class="module-page-actions">
+                    <a class="ghost-button" href="/MODELO_IMPORTACAO_EMPRESAS.csv" download>Baixar modelo CSV</a>
+                    <a class="ghost-button" href="/MODELO_IMPORTACAO_EMPRESAS.xlsx" download>Baixar modelo XLSX</a>
+                </div>
+            </header>
+
+            <form id="company-import-form" class="module-form">
+                <label class="file-picker">
+                    Selecionar arquivo
+                    <input id="company-import-file" type="file" accept=".xlsx,.csv">
+                </label>
+                <button id="company-import-submit" type="submit">Importar</button>
+                <span id="company-import-status">Selecione um arquivo para importar.</span>
+            </form>
+
+            <section id="company-import-result" class="import-result" hidden>
+                <h2>Resultado da importacao</h2>
+                <div class="import-summary-grid">
+                    <span>Arquivo<strong id="import-result-file">-</strong></span>
+                    <span>Total de linhas<strong id="import-result-total">0</strong></span>
+                    <span>Importadas<strong id="import-result-imported">0</strong></span>
+                    <span>Atualizadas<strong id="import-result-updated">0</strong></span>
+                    <span>Duplicadas<strong id="import-result-duplicated">0</strong></span>
+                    <span>CNPJ pendente<strong id="import-result-pending">0</strong></span>
+                    <span>Erros<strong id="import-result-errors">0</strong></span>
+                </div>
+                <div id="company-import-errors-wrap" class="import-errors" hidden>
+                    <h3>Registros com erro</h3>
+                    <div class="module-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Linha</th>
+                                    <th>Campo</th>
+                                    <th>Motivo</th>
+                                </tr>
+                            </thead>
+                            <tbody id="company-import-errors"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section class="module-history">
+                <h2>Historico das importacoes</h2>
+                <div class="module-table-wrap">
+                    <table id="company-import-history-table">
+                        <thead>
+                            <tr>
+                                <th>Data</th>
+                                <th>Arquivo</th>
+                                <th>Registros</th>
+                                <th>Importados</th>
+                                <th>Pendentes</th>
+                                <th>Erros</th>
+                                <th>Usuario</th>
+                            </tr>
+                        </thead>
+                        <tbody id="company-import-history"></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <section id="empresas-cadastrar-page" class="module-page" hidden>
+            <header class="module-page-header">
+                <div>
+                    <strong>Cadastrar empresa</strong>
+                    <span>Cadastro manual gravado em CRM_importacao.sqlite</span>
+                </div>
+            </header>
+
+            <form id="imported-company-form" class="manual-company-form module-manual-form">
+                <section class="manual-company-section">
+                    <h2>Empresa</h2>
+                    <div class="manual-company-grid">
+                        <label>CNPJ<input name="CNPJ" inputmode="numeric" placeholder="00.000.000/0001-00"></label>
+                        <label>Razao Social<input name="RAZAO_SOCIAL" required placeholder="EMPRESA EXEMPLO LTDA"></label>
+                        <label>Nome Fantasia<input name="NOME_FANTASIA" placeholder="EMPRESA EXEMPLO"></label>
+                        <label>E-mail<input name="EMAIL" type="email" placeholder="contato@empresa.com.br"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Contato</h2>
+                    <div class="manual-company-grid">
+                        <label>Telefone<input name="TELEFONE" inputmode="numeric" placeholder="4133771873"></label>
+                        <label>Telefone 2<input name="TELEFONE2" inputmode="numeric" placeholder="41999999999"></label>
+                        <label>Nome do contato<input name="NOME_CONTATO" placeholder="Joao da Silva"></label>
+                        <label>Cargo/Funcao<input name="CARGO_CONTATO" placeholder="Recursos Humanos"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Endereco</h2>
+                    <div class="manual-company-grid">
+                        <label>CEP<input name="CEP" inputmode="numeric" placeholder="81730020"></label>
+                        <label>Logradouro<input name="LOGRADOURO" placeholder="Rua Bom Jesus do Iguape"></label>
+                        <label>Numero<input name="NUMERO" placeholder="6051"></label>
+                        <label>Complemento<input name="COMPLEMENTO" placeholder="Sala 10"></label>
+                        <label>Bairro<input name="BAIRRO" placeholder="Boqueirao"></label>
+                        <label>Municipio<input name="MUNICIPIO" placeholder="Curitiba"></label>
+                        <label>UF<input name="UF" maxlength="2" placeholder="PR"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Observacoes</h2>
+                    <div class="manual-company-grid">
+                        <label class="manual-company-notes-field">Observacoes<textarea name="OBSERVACOES" rows="5" placeholder="Informacoes iniciais do cadastro"></textarea></label>
+                    </div>
+                </section>
+
+                <footer class="manual-company-actions">
+                    <span id="imported-company-status">Preencha os dados para salvar no banco de importacao.</span>
+                    <div>
+                        <button class="ghost-button" type="reset">Limpar</button>
+                        <button type="submit">Salvar</button>
+                    </div>
+                </footer>
+            </form>
+        </section>
+
+        <section class="filters main-crm-view">
+            <form id="search-form">
+                <input id="query-filter" name="q" type="hidden">
+
+                <div class="simple-search-row">
+                    <label>
+                        Razão Social
+                        <input id="razao-filter" type="search" placeholder="Nome empresarial">
+                    </label>
+
+                    <label>
+                        CNPJ
+                        <input id="cnpj-filter" type="search" inputmode="numeric" placeholder="00.000.000/0000-00">
+                    </label>
+
+                    <div class="filter-actions simple-actions">
+                        <button class="search-button" type="submit">Pesquisar</button>
+                    </div>
+                </div>
+
+                <div id="advanced-search-panel" class="advanced-search-panel" hidden>
+                <div class="primary-filters">
+                    <label>
+                        Nome Fantasia
+                        <input id="fantasia-filter" type="search" placeholder="Nome comercial">
+                    </label>
+
+                    <label>
+                        CNAE principal
+                        <input id="cnae" name="cnae" list="cnaes-list" placeholder="Código ou descrição">
+                        <datalist id="cnaes-list"></datalist>
+                    </label>
+
+                    <label>
+                        Abertura de
+                        <input id="abertura-inicio" name="aberturaInicio" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa">
+                    </label>
+
+                    <label>
+                        Abertura até
+                        <input id="abertura-fim" name="aberturaFim" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa">
+                    </label>
+
+                </div>
+
+                <section class="quick-filter-section" aria-label="Filtros rápidos">
+                    <strong>Filtros rápidos</strong>
+                    <div class="quick-switches">
+                        <label class="switch-filter">
+                            <input name="situacao" type="checkbox" value="02" checked>
+                            <span class="switch-ui" aria-hidden="true"></span>
+                            <span>Somente ativos</span>
+                        </label>
+
+                        <label class="switch-filter">
+                            <input id="mei-only" name="mei" type="checkbox" value="S">
+                            <span class="switch-ui" aria-hidden="true"></span>
+                            <span>Somente MEI</span>
+                        </label>
+
+                        <label class="switch-filter">
+                            <input name="temTelefone" type="checkbox" value="1">
+                            <span class="switch-ui" aria-hidden="true"></span>
+                            <span>Com telefone</span>
+                        </label>
+
+                        <label class="switch-filter">
+                            <input name="temEmail" type="checkbox" value="1">
+                            <span class="switch-ui" aria-hidden="true"></span>
+                            <span>Com e-mail</span>
+                        </label>
+
+                        <label class="switch-filter">
+                            <input id="only-matriz" name="matrizFilial" type="checkbox" value="1">
+                            <span class="switch-ui" aria-hidden="true"></span>
+                            <span>Somente matriz</span>
+                        </label>
+                    </div>
+                </section>
+
+                <div class="filter-actions advanced-actions">
+                    <button class="search-button" type="submit">Pesquisar filtros</button>
+                    <button id="clear-button" class="ghost-button" type="button">Limpar filtros</button>
+                </div>
+                </div>
+            </form>
+        </section>
+
+        <section class="results main-crm-view">
+            <header class="toolbar">
+                <div class="result-summary">
+                    <strong id="result-title">Empresas</strong>
+                    <span id="status">Pronto para pesquisar</span>
+                </div>
+                <div class="selection-actions">
+                    <span id="selection-count">0 selecionadas</span>
+                    <button id="clear-selection-button" class="ghost-button" type="button">Limpar seleções</button>
+                </div>
+            </header>
+
+            <div class="results-workspace">
+                <div class="table-wrap">
+                    <table id="results-table">
+                        <thead>
+                            <tr>
+                                <th class="select-column">
+                                    <input id="select-page" type="checkbox" aria-label="Selecionar todos os resultados" title="Selecionar todos os resultados da pesquisa">
+                                    <span>Todos</span>
+                                </th>
+                                <th class="flag-column">Flag</th>
+                                <th>Razão Social</th>
+                                <th>Nome Fantasia</th>
+                                <th>Município</th>
+                                <th>UF</th>
+                                <th>Telefone</th>
+                                <th>CNAE</th>
+                                <th>Abertura</th>
+                                <th>Porte</th>
+                                <th>CNPJ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rows"></tbody>
+                    </table>
+                </div>
+
+                <div class="table-footer-row">
+                    <span id="table-show-summary">Mostrar registros por página no controle da tabela.</span>
+                </div>
+
+                <section class="notes-panel is-hidden" aria-label="Bloco de notas da prospecção">
+                    <header class="notes-company">
+                        <strong id="notes-title">Selecione uma empresa</strong>
+                        <button id="back-to-table-button" class="back-link-button" type="button">&larr; Voltar para a tabela de resultados</button>
+                    </header>
+
+                    <form id="prospection-form" class="notes-form">
+                        <section class="company-details-section" aria-label="Informações detalhadas da empresa">
+                            <div id="company-details-notepad" class="company-details-notepad" tabindex="0" role="textbox" aria-readonly="true"></div>
+                        </section>
+
+                        <div class="contact-fields">
+                            <label class="contact-person-field">
+                            Quem atendeu
+                            <input id="contact-person" type="text" placeholder="Maria Aparecida">
+                        </label>
+
+                            <label class="contact-role-field">
+                            Cargo / Setor
+                            <input id="contact-role" type="text" placeholder="Recursos Humanos">
+                        </label>
+
+                            <label class="next-contact-field">
+                            PrÃ³ximo contato
+                            <input id="next-contact" type="date">
+                            </label>
+
+                            <label class="whatsapp-field checkbox-card">
+                                <input id="contact-whatsapp" type="checkbox">
+                                <span>WhatsApp</span>
+                            </label>
+
+                            <label class="contact-email-field">
+                                E-mail
+                                <input id="contact-email" type="email" placeholder="contato@empresa.com.br">
+                            </label>
+
+                            <label class="employee-count-field">
+                                Quantas vidas / funcionários
+                                <select id="employee-count">
+                                    <option value="">Selecione</option>
+                                    <option value="0-5">0-5</option>
+                                    <option value="6-10">6-10</option>
+                                    <option value="11-15">11-15</option>
+                                    <option value="16-20">16-20</option>
+                                    <option value="21-25">21-25</option>
+                                    <option value="26-30">26-30</option>
+                                    <option value="31-35">31-35</option>
+                                    <option value="36-40">36-40</option>
+                                    <option value="41-45">41-45</option>
+                                    <option value="46-50">46-50</option>
+                                    <option value="51-100">51 - 100</option>
+                                    <option value="101-150">101 - 150</option>
+                                    <option value="151-200">151 - 200</option>
+                                    <option value="maior que 200">maior que 200</option>
+                                    <option value="maior que 300">maior que 300</option>
+                                    <option value="maior que 400">maior que 400</option>
+                                    <option value="maior que 500">maior que 500</option>
+                                </select>
+                            </label>
+
+                            <fieldset class="benefit-group health-benefit-group">
+                                <legend>Tem plano de saúde</legend>
+                                <label>
+                                    Resposta
+                                    <select id="health-plan">
+                                        <option value="">Selecione</option>
+                                        <option value="Sim">Sim</option>
+                                        <option value="Não">Não</option>
+                                        <option value="Não informado">Não informado</option>
+                                    </select>
+                                </label>
+                                <label class="checkbox-card">
+                                    <input id="health-plan-all-employees" type="checkbox">
+                                    <span>Para todos os colaboradores</span>
+                                </label>
+                                <label>
+                                    Operadora
+                                    <input id="health-plan-operator" type="text" placeholder="Operadora">
+                                </label>
+                                <label>
+                                    Vencimento contrato
+                                    <input id="health-plan-expiration" type="date">
+                                </label>
+                            </fieldset>
+
+                            <fieldset class="benefit-group dental-benefit-group">
+                                <legend>Tem plano odontológico</legend>
+                                <label>
+                                    Resposta
+                                    <select id="dental-plan">
+                                        <option value="">Selecione</option>
+                                        <option value="Sim">Sim</option>
+                                        <option value="Não">Não</option>
+                                        <option value="Não informado">Não informado</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    Operadora
+                                    <input id="dental-plan-operator" type="text" placeholder="Operadora">
+                                </label>
+                                <label>
+                                    Vencimento contrato
+                                    <input id="dental-plan-expiration" type="date">
+                                </label>
+                            </fieldset>
+
+                            <fieldset class="benefit-group life-benefit-group">
+                                <legend>Tem seguro de vida</legend>
+                                <label>
+                                    Resposta
+                                    <select id="life-insurance">
+                                        <option value="">Selecione</option>
+                                        <option value="Sim">Sim</option>
+                                        <option value="Não">Não</option>
+                                        <option value="Não informado">Não informado</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    Operadora
+                                    <input id="life-insurance-operator" type="text" placeholder="Operadora">
+                                </label>
+                                <label>
+                                    Vencimento contrato
+                                    <input id="life-insurance-expiration" type="date">
+                                </label>
+                            </fieldset>
+
+                            <fieldset class="replacement-reasons-group">
+                                <legend>Quais os principais motivos para ocorrer uma substituição?</legend>
+                                <label class="checkbox-card">
+                                    <input id="reason-cost-reduction" type="checkbox">
+                                    <span>Redução de custos</span>
+                                </label>
+                                <label class="checkbox-card">
+                                    <input id="reason-better-service" type="checkbox">
+                                    <span>Melhorar atendimento</span>
+                                </label>
+                                <label class="checkbox-card">
+                                    <input id="reason-expanded-coverage" type="checkbox">
+                                    <span>Ampliar cobertura</span>
+                                </label>
+                            </fieldset>
+
+                            <label class="switch-interest-field">
+                                Tem interesse em trocar?
+                                <select id="switch-interest">
+                                    <option value="">Selecione</option>
+                                    <option value="Sim">Sim</option>
+                                    <option value="Não">Não</option>
+                                    <option value="Talvez">Talvez</option>
+                                    <option value="Não informado">Não informado</option>
+                                </select>
+                            </label>
+
+                            <label class="benefits-field">
+                                Outras necessidades, benefícios que tem interesse?
+                                <input id="benefits" type="text" placeholder="Benefícios informados">
+                            </label>
+                        </div>
+                        <label>
+                            Observações do contato
+                            <div id="prospection-editor" class="notepad-editor" contenteditable="true" role="textbox" aria-multiline="true"></div>
+                            <textarea id="prospection-notes" hidden></textarea>
+                        </label>
+                        <aside class="history-column" aria-label="HistÃ³rico de contatos">
+                            <strong>HistÃ³rico de Contatos</strong>
+                            <div id="contact-history" class="contact-history">
+                                <p class="empty-history">Nenhum contato registrado.</p>
+                            </div>
+                        </aside>
+
+                        <div class="notes-actions">
+                            <span id="prospection-status">Nenhuma empresa selecionada</span>
+                            <button id="save-prospection-button" type="submit" disabled>Salvar histórico</button>
+                        </div>
+                    </form>
+                </section>
+
+                <aside class="lead-panel" aria-label="Empresas selecionadas">
+                    <header class="lead-panel-header">
+                        <div>
+                            <strong>Selecionadas</strong>
+                            <span id="lead-panel-summary">Nenhuma empresa selecionada</span>
+                        </div>
+                    </header>
+
+                    <div id="selected-leads" class="selected-leads">
+                        <div class="empty-selection">Selecione empresas na tabela para preparar contatos.</div>
+                    </div>
+                </aside>
+            </div>
+        </section>
+    </main>
+
+    <div id="company-record-modal" class="company-record-modal" role="dialog" aria-modal="true" aria-labelledby="company-record-modal-title" hidden>
+        <section class="company-record-dialog" aria-label="Cadastro selecionado">
+            <header class="company-record-header">
+                <div class="company-record-heading">
+                    <strong id="company-record-modal-title">Cadastro da empresa</strong>
+                    <span id="company-record-modal-subtitle"></span>
+                </div>
+                <div class="company-record-actions">
+                    <button id="company-record-open-notes" class="ghost-button" type="button">Abrir historico</button>
+                    <button id="company-record-modal-close" class="ghost-button" type="button">Fechar</button>
+                </div>
+            </header>
+
+            <div id="company-record-modal-body" class="company-record-body" tabindex="0"></div>
+        </section>
+    </div>
+
+    <div id="overdue-modal" class="company-record-modal" role="dialog" aria-modal="true" aria-labelledby="overdue-modal-title" hidden>
+        <section class="company-record-dialog overdue-dialog" aria-label="Contatos atrasados">
+            <header class="company-record-header">
+                <div class="company-record-heading">
+                    <strong id="overdue-modal-title">Contatos atrasados</strong>
+                    <span id="overdue-modal-subtitle">Empresas com proximo contato vencido</span>
+                </div>
+                <button id="overdue-modal-close" class="ghost-button" type="button">Fechar</button>
+            </header>
+
+            <div id="overdue-modal-list" class="overdue-modal-list"></div>
+        </section>
+    </div>
+
+    <div id="manual-company-modal" class="manual-company-modal" role="dialog" aria-modal="true" aria-labelledby="manual-company-title" hidden>
+        <section class="manual-company-dialog" aria-label="Cadastro manual de empresa">
+            <header class="manual-company-header">
+                <div>
+                    <strong id="manual-company-title">Cadastrar empresa</strong>
+                    <span>Cadastro manual para empresa nao encontrada na base principal</span>
+                </div>
+                <button id="manual-company-close" class="ghost-button" type="button">Fechar</button>
+            </header>
+
+            <form id="manual-company-form" class="manual-company-form">
+                <section class="manual-company-section">
+                    <h2>Empresa</h2>
+                    <div class="manual-company-grid">
+                        <label>CNPJ<input name="CNPJ" required inputmode="numeric" placeholder="00.000.000/0000-00"></label>
+                        <label>Razao Social<input name="RAZAO_SOCIAL" required placeholder="Empresa Exemplo LTDA"></label>
+                        <label>Nome Fantasia<input name="NOME_FANTASIA" placeholder="Empresa Exemplo"></label>
+                        <label>Natureza Juridica<input name="NATUREZA_JURIDICA" placeholder="2062"></label>
+                        <label>Descricao Natureza<input name="NATUREZA_JURIDICA_DESCRICAO" placeholder="Sociedade Empresaria Limitada"></label>
+                        <label>Situacao Cadastral
+                            <select name="SITUACAO_CADASTRAL">
+                                <option value="">Selecione</option>
+                                <option value="02">Ativa</option>
+                                <option value="01">Nula</option>
+                                <option value="03">Suspensa</option>
+                                <option value="04">Inapta</option>
+                                <option value="08">Baixada</option>
+                            </select>
+                        </label>
+                        <label>Data de Abertura<input name="DATA_INICIO_ATIVIDADE" type="date"></label>
+                        <label>Matriz/Filial
+                            <select name="IDENTIFICADOR_MATRIZ_FILIAL">
+                                <option value="">Selecione</option>
+                                <option value="1">Matriz</option>
+                                <option value="2">Filial</option>
+                            </select>
+                        </label>
+                        <label>Porte
+                            <select name="PORTE_EMPRESA">
+                                <option value="">Selecione</option>
+                                <option value="00">Nao informado</option>
+                                <option value="01">Micro empresa</option>
+                                <option value="03">Empresa de pequeno porte</option>
+                                <option value="05">Demais</option>
+                            </select>
+                        </label>
+                        <label>Capital Social<input name="CAPITAL_SOCIAL" inputmode="decimal" placeholder="100000,00"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Atividade economica</h2>
+                    <div class="manual-company-grid">
+                        <label>CNAE Principal<input name="CNAE_FISCAL_PRINCIPAL" inputmode="numeric" placeholder="1234567"></label>
+                        <label>Atividade Principal<input name="CNAE_FISCAL_PRINCIPAL_DESCRICAO" placeholder="Comercio varejista..."></label>
+                        <label>CNAE Secundario<input name="CNAE_FISCAL_SECUNDARIA" placeholder="Lista de atividades secundarias"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Endereco</h2>
+                    <div class="manual-company-grid">
+                        <label>Tipo Logradouro<input name="TIPO_LOGRADOURO" placeholder="Rua"></label>
+                        <label>Logradouro<input name="LOGRADOURO" placeholder="Exemplo"></label>
+                        <label>Numero<input name="NUMERO" placeholder="123"></label>
+                        <label>Complemento<input name="COMPLEMENTO" placeholder="Sala 02"></label>
+                        <label>Bairro<input name="BAIRRO" placeholder="Centro"></label>
+                        <label>Municipio<input name="MUNICIPIO_DESCRICAO" placeholder="Curitiba"></label>
+                        <label>Codigo Municipio<input name="MUNICIPIO" inputmode="numeric" placeholder="4106902"></label>
+                        <label>UF<input name="UF" maxlength="2" placeholder="PR"></label>
+                        <label>CEP<input name="CEP" inputmode="numeric" placeholder="80000000"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Contato</h2>
+                    <div class="manual-company-grid">
+                        <label>DDD 1<input name="DDD_1" inputmode="numeric" maxlength="3" placeholder="41"></label>
+                        <label>Telefone 1<input name="TELEFONE_1" inputmode="numeric" placeholder="999999999"></label>
+                        <label>DDD 2<input name="DDD_2" inputmode="numeric" maxlength="3" placeholder="41"></label>
+                        <label>Telefone 2<input name="TELEFONE_2" inputmode="numeric" placeholder="33333333"></label>
+                        <label>E-mail<input name="EMAIL" type="email" placeholder="contato@empresa.com.br"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Simples / MEI</h2>
+                    <div class="manual-company-grid">
+                        <label>Optante pelo Simples
+                            <select name="OPCAO_PELO_SIMPLES">
+                                <option value="">Selecione</option>
+                                <option value="S">Sim</option>
+                                <option value="N">Nao</option>
+                            </select>
+                        </label>
+                        <label>Data Opcao Simples<input name="DATA_OPCAO_SIMPLES" type="date"></label>
+                        <label>Data Exclusao Simples<input name="DATA_EXCLUSAO_SIMPLES" type="date"></label>
+                        <label>MEI
+                            <select name="OPCAO_PELO_MEI">
+                                <option value="">Selecione</option>
+                                <option value="S">Sim</option>
+                                <option value="N">Nao</option>
+                            </select>
+                        </label>
+                        <label>Data Opcao MEI<input name="DATA_OPCAO_MEI" type="date"></label>
+                        <label>Data Exclusao MEI<input name="DATA_EXCLUSAO_MEI" type="date"></label>
+                    </div>
+                </section>
+
+                <section class="manual-company-section">
+                    <h2>Prospecao</h2>
+                    <div class="manual-company-grid">
+                        <label>Nome de quem atendeu<input name="NOME_CONTATO" placeholder="Maria Aparecida"></label>
+                        <label>Cargo / Atividade<input name="CARGO_CONTATO" placeholder="Recursos Humanos"></label>
+                        <label>Proximo contato<input name="PROXIMO_CONTATO" type="date"></label>
+                        <label>Numero de funcionarios
+                            <select name="NUMERO_FUNCIONARIOS">
+                                <option value="">Selecione</option>
+                                <option value="0-5">0-5</option>
+                                <option value="6-10">6-10</option>
+                                <option value="11-15">11-15</option>
+                                <option value="16-20">16-20</option>
+                                <option value="21-25">21-25</option>
+                                <option value="26-30">26-30</option>
+                                <option value="31-35">31-35</option>
+                                <option value="36-40">36-40</option>
+                                <option value="41-45">41-45</option>
+                                <option value="46-50">46-50</option>
+                                <option value="51-100">51 - 100</option>
+                                <option value="101-150">101 - 150</option>
+                                <option value="151-200">151 - 200</option>
+                                <option value="maior que 200">maior que 200</option>
+                                <option value="maior que 300">maior que 300</option>
+                                <option value="maior que 400">maior que 400</option>
+                                <option value="maior que 500">maior que 500</option>
+                            </select>
+                        </label>
+                        <label>Beneficios<input name="BENEFICIOS" placeholder="Saude, odontologico, seguro"></label>
+                        <label class="manual-company-notes-field">Observacoes<textarea name="OBSERVACOES" rows="4" placeholder="Informacoes iniciais do contato"></textarea></label>
+                    </div>
+                </section>
+
+                <footer class="manual-company-actions">
+                    <span id="manual-company-status">Preencha os dados para criar o cadastro no CRM.</span>
+                    <div>
+                        <button class="ghost-button" type="reset">Limpar</button>
+                        <button type="submit">Salvar cadastro</button>
+                    </div>
+                </footer>
+            </form>
+        </section>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>
