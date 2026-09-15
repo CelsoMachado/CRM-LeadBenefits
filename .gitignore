@@ -1,10 +1,18 @@
 node_modules/
+.codex-backups/
+
+.env
+.env.*
+!.env.example
 
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite
+*.sqlite3
 *test*.sqlite
 *teste*.sqlite
 
+*.zip
+*.cmd
+
 .netlify/
-.env
-.env.*

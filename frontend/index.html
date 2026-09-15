@@ -8,7 +8,29 @@
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-    <main class="app">
+    <section id="login-page" class="login-page" aria-label="Login no LeadBenefits">
+        <form id="login-form" class="login-card">
+            <div class="brand login-brand">
+                <span class="mark">LB</span>
+                <div>
+                    <h1>LeadBenefits</h1>
+                    <p>CRM</p>
+                </div>
+            </div>
+            <label>
+                E-mail
+                <input id="login-email" name="email" type="email" autocomplete="username" required>
+            </label>
+            <label>
+                Senha
+                <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button id="login-submit" type="submit">Entrar</button>
+            <span id="login-status" class="login-status" role="status"></span>
+        </form>
+    </section>
+
+    <main id="app-shell" class="app" hidden>
         <header class="topbar">
             <div class="brand">
                 <span class="mark">LB</span>
@@ -31,10 +53,14 @@
                     </div>
                 </div>
             </nav>
-            <button id="advanced-search-toggle" class="ghost-button topbar-action is-menu-hidden" type="button" aria-expanded="false" aria-controls="advanced-search-panel">
+            <button id="advanced-search-toggle" class="ghost-button topbar-action" type="button" aria-expanded="false" aria-controls="advanced-search-panel">
                 <span>Pesquisa Avançada</span>
                 <span class="advanced-search-arrow" aria-hidden="true"></span>
             </button>
+            <div class="session-box" aria-label="Usuario autenticado">
+                <span id="authenticated-user">-</span>
+                <button id="logout-button" class="ghost-button session-logout" type="button">Sair</button>
+            </div>
         </header>
 
         <section class="dashboard-panel main-crm-view" aria-label="Painel administrativo">
@@ -92,7 +118,10 @@
                     <article class="dashboard-contact-group is-today">
                         <header>
                             <div class="dashboard-group-title">
-                                <strong>Hoje</strong>
+                                <div>
+                                    <strong>Hoje</strong>
+                                    <small id="dashboard-hoje-importadas">Empresas importadas: -</small>
+                                </div>
                                 <span id="dashboard-hoje-count">0</span>
                                 <span class="dashboard-header-eye" title="Visualizar contatos de hoje" aria-label="Visualizar contatos de hoje" role="img">
                                     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -103,6 +132,16 @@
                             </div>
                         </header>
                         <div id="dashboard-hoje-list" class="dashboard-contact-list"></div>
+                    </article>
+
+                    <article class="dashboard-contact-group is-contacted-today">
+                        <header>
+                            <div class="dashboard-group-title">
+                                <strong>Contatos de hoje</strong>
+                                <span id="dashboard-contatos-hoje-count">0</span>
+                            </div>
+                        </header>
+                        <div id="dashboard-contatos-hoje-list" class="dashboard-contact-list"></div>
                     </article>
 
                     <article class="dashboard-contact-group is-tomorrow">
@@ -269,7 +308,7 @@
                     </label>
 
                     <div class="filter-actions simple-actions">
-                        <button class="search-button" type="submit">Pesquisar</button>
+                        <button class="search-button" type="submit" data-search-source="rfb">Pesquisar</button>
                     </div>
                 </div>
 
@@ -278,6 +317,47 @@
                     <label>
                         Nome Fantasia
                         <input id="fantasia-filter" type="search" placeholder="Nome comercial">
+                    </label>
+
+                    <label>
+                        UF
+                        <select id="uf" name="uf">
+                            <option value="">Todas</option>
+                            <option value="AC">AC</option>
+                            <option value="AL">AL</option>
+                            <option value="AP">AP</option>
+                            <option value="AM">AM</option>
+                            <option value="BA">BA</option>
+                            <option value="CE">CE</option>
+                            <option value="DF">DF</option>
+                            <option value="ES">ES</option>
+                            <option value="GO">GO</option>
+                            <option value="MA">MA</option>
+                            <option value="MT">MT</option>
+                            <option value="MS">MS</option>
+                            <option value="MG">MG</option>
+                            <option value="PA">PA</option>
+                            <option value="PB">PB</option>
+                            <option value="PR">PR</option>
+                            <option value="PE">PE</option>
+                            <option value="PI">PI</option>
+                            <option value="RJ">RJ</option>
+                            <option value="RN">RN</option>
+                            <option value="RS">RS</option>
+                            <option value="RO">RO</option>
+                            <option value="RR">RR</option>
+                            <option value="SC">SC</option>
+                            <option value="SP">SP</option>
+                            <option value="SE">SE</option>
+                            <option value="TO">TO</option>
+                        </select>
+                    </label>
+
+                    <label>
+                        Município
+                        <select id="municipio" name="municipio" disabled>
+                            <option value="">Selecione a UF</option>
+                        </select>
                     </label>
 
                     <label>
@@ -334,7 +414,7 @@
                 </section>
 
                 <div class="filter-actions advanced-actions">
-                    <button class="search-button" type="submit">Pesquisar filtros</button>
+                    <button class="search-button" type="submit" data-search-source="prospeccoes">Pesquisar filtros</button>
                     <button id="clear-button" class="ghost-button" type="button">Limpar filtros</button>
                 </div>
                 </div>
@@ -405,7 +485,7 @@
                         </label>
 
                             <label class="next-contact-field">
-                            PrÃ³ximo contato
+                            Próximo contato
                             <input id="next-contact" type="date">
                             </label>
 
@@ -547,8 +627,8 @@
                             <div id="prospection-editor" class="notepad-editor" contenteditable="true" role="textbox" aria-multiline="true"></div>
                             <textarea id="prospection-notes" hidden></textarea>
                         </label>
-                        <aside class="history-column" aria-label="HistÃ³rico de contatos">
-                            <strong>HistÃ³rico de Contatos</strong>
+                        <aside class="history-column" aria-label="Histórico de contatos">
+                            <strong>Histórico de Contatos</strong>
                             <div id="contact-history" class="contact-history">
                                 <p class="empty-history">Nenhum contato registrado.</p>
                             </div>
@@ -575,6 +655,10 @@
                 </aside>
             </div>
         </section>
+
+        <footer class="app-footer" aria-label="Versão do sistema">
+            <span id="app-version">LeadBenefits v-</span>
+        </footer>
     </main>
 
     <div id="company-record-modal" class="company-record-modal" role="dialog" aria-modal="true" aria-labelledby="company-record-modal-title" hidden>

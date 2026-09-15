@@ -1,10 +1,14 @@
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { once } = require('events');
 
 const Database = require('better-sqlite3');
+const appMetadata = require('./app-metadata');
+const featureCatalog = require('./features/catalog');
+const auth = require('./auth');
 let XLSX;
 
 try {
@@ -23,7 +27,85 @@ const defaultBancoPath = fs.existsSync(path.join(projectDir, 'LeadBenefits.sqlit
 const bancoPath = process.env.LEADBENEFITS_DB || defaultBancoPath;
 const prospeccoesPath = process.env.LEADBENEFITS_PROSPECCOES_DB || path.join(dataDir, 'prospeccoes.sqlite');
 const importacaoPath = process.env.LEADBENEFITS_IMPORTACAO_DB || path.join(dataDir, 'CRM_importacao.sqlite');
+const adminPath = process.env.LEADBENEFITS_ADMIN_DB || path.join(dataDir, 'LeadBenefits_admin.sqlite');
 const port = Number(process.env.PORT || 3000);
+const rfbSearchServiceUrl = process.env.RFB_SEARCH_SERVICE_URL
+    || process.env.LEADBENEFITS_RFB_SEARCH_URL
+    || process.env.LEADBENEFITS_RFB_API_URL
+    || '';
+const rfbSearchServiceUnavailableMessage = 'Servidor de consulta à base RFB indisponível. Entre em contato com o administrador do sistema.';
+const mainDatabaseUnavailableMessage = 'O servidor para acessar este servico esta indisponivel. Entre em contato com o administrador do software.';
+const publicDatabaseUnavailableMessage = 'Servico de pesquisa indisponivel. Entre em contato com o administrador.';
+const genericErrorMessage = 'Nao foi possivel concluir a solicitacao. Informe o codigo de suporte ao administrador.';
+
+function formatCorrelationDate(date) {
+    return date.toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+function createCorrelationId(date = new Date()) {
+    return `LB-${formatCorrelationDate(date)}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+function redactSensitive(value) {
+    if (value === null || value === undefined) {
+        return value;
+    }
+
+    return String(value)
+        .replace(/(SESSION_SECRET|SUPPORT_SECRET|TOKEN|PASSWORD|SENHA|SECRET|API_KEY)(\s*[=:]\s*)[^\s,;]+/gi, '$1$2[REDACTED]')
+        .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]');
+}
+
+function createRequestContext(req, url) {
+    return {
+        correlationId: createCorrelationId(),
+        method: req.method,
+        route: url.pathname,
+        startedAt: new Date(),
+        appVersion: appMetadata.version
+    };
+}
+
+function logTechnical(level, context, result, message, details = {}) {
+    const entry = {
+        data_hora: new Date().toISOString(),
+        nivel: level,
+        correlation_id: context?.correlationId || createCorrelationId(),
+        rota: context?.route || '',
+        metodo: context?.method || '',
+        resultado: result,
+        app_version: appMetadata.version,
+        mensagem: redactSensitive(message)
+    };
+
+    const safeDetails = {};
+
+    for (const [key, value] of Object.entries(details || {})) {
+        if (/senha|password|token|secret|support_secret|session_secret|api_key/i.test(key)) {
+            safeDetails[key] = '[REDACTED]';
+        } else {
+            safeDetails[key] = redactSensitive(value);
+        }
+    }
+
+    if (Object.keys(safeDetails).length) {
+        entry.detalhes = safeDetails;
+    }
+
+    const output = JSON.stringify(entry);
+
+    if (level === 'ERROR') {
+        console.error(output);
+        return;
+    }
+
+    if (level === 'WARN') {
+        console.warn(output);
+        return;
+    }
+
+    console.log(output);
+}
 
 function ensureDatabaseDirectory(databasePath) {
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -53,6 +135,7 @@ const db = fs.existsSync(bancoPath)
     : null;
 const prospeccoesDb = new Database(prospeccoesPath);
 const importacaoDb = new Database(importacaoPath);
+const adminDb = new Database(adminPath);
 
 if (db) {
     db.pragma('query_only = ON');
@@ -61,6 +144,7 @@ if (db) {
 }
 prospeccoesDb.pragma('journal_mode = WAL');
 importacaoDb.pragma('journal_mode = WAL');
+auth.initAuthDatabase(adminDb, featureCatalog);
 prospeccoesDb.exec(`
     CREATE TABLE IF NOT EXISTS PROSPECCOES (
         CNPJ TEXT PRIMARY KEY,
@@ -219,7 +303,10 @@ const dataTableOrderColumns = {
 };
 
 function json(res, status, body) {
-    const data = JSON.stringify(body);
+    const responseBody = body && body.error && res.correlationId && !body.correlationId
+        ? { ...body, correlationId: res.correlationId }
+        : body;
+    const data = JSON.stringify(responseBody);
 
     res.writeHead(status, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -229,16 +316,34 @@ function json(res, status, body) {
     res.end(data);
 }
 
-function requireMainDatabase(res) {
+function jsonError(res, status, userMessage, context, technicalMessage, details = {}) {
+    const level = status >= 500 ? 'ERROR' : 'WARN';
+
+    logTechnical(level, context || {
+        correlationId: res.correlationId,
+        method: res.requestMethod,
+        route: res.requestRoute
+    }, status >= 500 ? 'ERRO' : 'REJEITADO', technicalMessage || userMessage, {
+        status,
+        ...details
+    });
+
+    json(res, status, { error: userMessage });
+}
+
+function mainDatabaseUnavailable(res, context) {
+    jsonError(res, 503, publicDatabaseUnavailableMessage, context, mainDatabaseUnavailableMessage, {
+        databaseConfigured: Boolean(bancoPath),
+        rfbServiceConfigured: Boolean(rfbSearchServiceUrl)
+    });
+}
+
+function requireMainDatabase(res, context) {
     if (db) {
         return true;
     }
 
-    json(res, 503, {
-        error: 'Banco principal LeadBenefits.sqlite nao encontrado no servidor.',
-        database: bancoPath,
-        hint: 'Envie o arquivo para o deploy/volume ou configure LEADBENEFITS_DB com o caminho correto.'
-    });
+    mainDatabaseUnavailable(res, context);
     return false;
 }
 
@@ -717,8 +822,25 @@ function getEntryMonth(value) {
     return `${parts.year}-${parts.month}`;
 }
 
+function getEntryDate(value) {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+
+    const parts = getDashboardDateParts(date);
+    return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 function hasHistoryInMonth(row, history, yearMonth) {
     return history.some((entry) => getEntryMonth(entry.at) === yearMonth);
+}
+
+function getLatestHistoryEntryForDate(history, isoDate) {
+    return history
+        .filter((entry) => getEntryDate(entry.at) === isoDate)
+        .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))[0] || null;
 }
 
 function stripHtml(value) {
@@ -760,25 +882,29 @@ function isLeadInNegotiation(row, history) {
 }
 
 function formatDashboardPhone(data) {
-    const first = `${data.DDD_1 ? `(${data.DDD_1}) ` : ''}${data.TELEFONE_1 || ''}`.trim();
-    const second = `${data.DDD_2 ? `(${data.DDD_2}) ` : ''}${data.TELEFONE_2 || ''}`.trim();
+    const firstPhone = data.TELEFONE_1 || data.TELEFONE || '';
+    const secondPhone = data.TELEFONE_2 || data.TELEFONE2 || '';
+    const first = `${data.DDD_1 ? `(${data.DDD_1}) ` : ''}${firstPhone}`.trim();
+    const second = `${data.DDD_2 ? `(${data.DDD_2}) ` : ''}${secondPhone}`.trim();
     return [first, second].filter(Boolean).join(' / ');
 }
 
-function buildDashboardContact(row, history) {
+function buildDashboardContact(row, history, options = {}) {
     const storedData = parseJsonObject(row.DADOS_EMPRESA);
-    const databaseData = db.prepare(`
-        SELECT *
-        FROM CRM_EMPRESAS_PESQUISA
-        WHERE CNPJ = @cnpj
-        LIMIT 1
-    `).get({ cnpj: row.CNPJ }) || {};
+    const databaseData = db
+        ? db.prepare(`
+            SELECT *
+            FROM CRM_EMPRESAS_PESQUISA
+            WHERE CNPJ = @cnpj
+            LIMIT 1
+        `).get({ cnpj: row.CNPJ }) || {}
+        : {};
     const data = {
         ...storedData,
         ...databaseData,
         CNPJ: databaseData.CNPJ || storedData.CNPJ || row.CNPJ
     };
-    const latestEntry = history[history.length - 1] || {};
+    const latestEntry = options.historyEntry || history[history.length - 1] || {};
 
     return {
         cnpj: row.CNPJ,
@@ -791,6 +917,7 @@ function buildDashboardContact(row, history) {
         contato: row.NOME_CONTATO || latestEntry.contactPerson || '',
         cargo: row.CARGO_CONTATO || latestEntry.contactRole || '',
         proximoContato: row.PROXIMO_CONTATO || '',
+        contatoRealizadoEm: options.contatoRealizadoEm || '',
         beneficios: row.BENEFICIOS || latestEntry.benefits || '',
         atualizadoEm: row.ATUALIZADO_EM
     };
@@ -802,14 +929,15 @@ function dashboardHandler(req, res, url) {
         return;
     }
 
-    if (!requireMainDatabase(res)) {
-        return;
-    }
-
     const todayIso = getDashboardDateIso();
     const tomorrowIso = addDaysToIsoDate(todayIso, 1);
     const currentMonth = todayIso.slice(0, 7);
-    const totalCadastros = db.prepare('SELECT COUNT(*) AS total FROM ESTABELECIMENTOS').get().total;
+    const totalCadastros = importacaoDb.prepare('SELECT COUNT(*) AS total FROM Empresas_Importadas').get().total;
+    const totalEmpresasImportadas = importacaoDb.prepare(`
+        SELECT COUNT(*) AS total
+        FROM Empresas_Importadas
+        WHERE ORIGEM = 'IMPORTACAO'
+    `).get().total;
     const rows = prospeccoesDb.prepare(`
         SELECT
             CNPJ,
@@ -830,13 +958,15 @@ function dashboardHandler(req, res, url) {
     const agenda = {
         atrasados: [],
         hoje: [],
-        amanha: []
+        amanha: [],
+        contatosHoje: []
     };
     let trabalhadosMes = 0;
     let leadsNegociacao = 0;
 
     for (const row of rows) {
         const history = getProspeccaoHistory(row.OBSERVACOES);
+        const todayHistoryEntry = getLatestHistoryEntryForDate(history, todayIso);
 
         if (hasHistoryInMonth(row, history, currentMonth)) {
             trabalhadosMes += 1;
@@ -844,6 +974,13 @@ function dashboardHandler(req, res, url) {
 
         if (isLeadInNegotiation(row, history)) {
             leadsNegociacao += 1;
+        }
+
+        if (todayHistoryEntry) {
+            agenda.contatosHoje.push(buildDashboardContact(row, history, {
+                historyEntry: todayHistoryEntry,
+                contatoRealizadoEm: todayHistoryEntry.at || row.ATUALIZADO_EM || ''
+            }));
         }
 
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(row.PROXIMO_CONTATO || ''))) {
@@ -870,6 +1007,7 @@ function dashboardHandler(req, res, url) {
         },
         metricas: {
             totalCadastros,
+            empresasImportadas: totalEmpresasImportadas,
             trabalhadosMes,
             leadsNegociacao,
             prospeccoes: rows.length
@@ -886,6 +1024,10 @@ function dashboardHandler(req, res, url) {
             amanha: {
                 total: agenda.amanha.length,
                 itens: agenda.amanha.slice(0, contactLimit)
+            },
+            contatosHoje: {
+                total: agenda.contatosHoje.length,
+                itens: agenda.contatosHoje.slice(0, contactLimit)
             }
         }
     });
@@ -2312,6 +2454,402 @@ function buildDataTablesSearch(url) {
     };
 }
 
+function getSearchSource(url) {
+    return url.searchParams.get('source') === 'prospeccoes' ? 'prospeccoes' : 'rfb';
+}
+
+function hydrateRowsWithOperationalFlags(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return rows;
+    }
+
+    const getFlag = prospeccoesDb.prepare(`
+        SELECT FLAG_ATIVA
+        FROM EMPRESAS_FLAGS
+        WHERE CNPJ = ?
+        LIMIT 1
+    `);
+
+    return rows.map((row) => {
+        const cnpj = String(row?.CNPJ || '').replace(/\D/g, '');
+        const flag = cnpj ? getFlag.get(cnpj) : null;
+
+        return {
+            ...row,
+            FLAG_ATIVA: flag ? Number(flag.FLAG_ATIVA || 0) : Number(row?.FLAG_ATIVA || 0)
+        };
+    });
+}
+
+function hydrateRfbPayload(payload) {
+    if (Array.isArray(payload?.data)) {
+        return {
+            ...payload,
+            data: hydrateRowsWithOperationalFlags(payload.data)
+        };
+    }
+
+    if (Array.isArray(payload?.rows)) {
+        return {
+            ...payload,
+            rows: hydrateRowsWithOperationalFlags(payload.rows)
+        };
+    }
+
+    return payload;
+}
+
+function buildRfbServiceSearchUrl(url) {
+    const serviceBase = /^[a-z][a-z\d+\-.]*:\/\//i.test(rfbSearchServiceUrl)
+        ? rfbSearchServiceUrl
+        : `http://${rfbSearchServiceUrl}`;
+    const target = new URL(serviceBase);
+
+    if (!target.pathname || target.pathname === '/') {
+        target.pathname = '/api/empresas';
+    }
+
+    target.search = '';
+
+    for (const [key, value] of url.searchParams.entries()) {
+        if (key !== 'source') {
+            target.searchParams.append(key, value);
+        }
+    }
+
+    return target;
+}
+
+async function fetchRfbSearchFromService(url) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    try {
+        const response = await fetch(buildRfbServiceSearchUrl(url), {
+            headers: {
+                Accept: 'application/json'
+            },
+            signal: controller.signal
+        });
+        const payload = await response.json().catch(() => null);
+
+        if (!response.ok || !payload || (!Array.isArray(payload.rows) && !Array.isArray(payload.data))) {
+            throw new Error(rfbSearchServiceUnavailableMessage);
+        }
+
+        return hydrateRfbPayload(payload);
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function normalizeProspectionSearchRow(row) {
+    const data = parseJsonObject(row.DADOS_EMPRESA);
+    const cnpj = String(data.CNPJ || row.CNPJ || '').replace(/\D/g, '');
+    const telefoneContato = row.TELEFONE_CONTATO || data.TELEFONE || data.TELEFONE_1 || '';
+    const telefone2 = data.TELEFONE2 || data.TELEFONE_2 || '';
+
+    return {
+        ...data,
+        CNPJ: cnpj,
+        CNPJ_BASICO: data.CNPJ_BASICO || cnpj.slice(0, 8),
+        RAZAO_SOCIAL: data.RAZAO_SOCIAL || '',
+        NOME_FANTASIA: data.NOME_FANTASIA || '',
+        MUNICIPIO: data.MUNICIPIO || '',
+        MUNICIPIO_DESCRICAO: data.MUNICIPIO_DESCRICAO || data.MUNICIPIO || '',
+        UF: data.UF || '',
+        CNAE_FISCAL_PRINCIPAL: data.CNAE_FISCAL_PRINCIPAL || '',
+        CNAE_FISCAL_PRINCIPAL_DESCRICAO: data.CNAE_FISCAL_PRINCIPAL_DESCRICAO || '',
+        DATA_INICIO_ATIVIDADE: data.DATA_INICIO_ATIVIDADE || '',
+        PORTE_EMPRESA: data.PORTE_EMPRESA || '',
+        DDD_1: data.DDD_1 || '',
+        TELEFONE_1: telefoneContato,
+        DDD_2: data.DDD_2 || '',
+        TELEFONE_2: telefone2,
+        EMAIL: data.EMAIL || row.EMAIL_CONTATO || '',
+        TEM_EMAIL: data.TEM_EMAIL || (data.EMAIL || row.EMAIL_CONTATO ? 1 : 0),
+        TEM_TELEFONE: data.TEM_TELEFONE || (telefoneContato || telefone2 ? 1 : 0),
+        NOME_CONTATO: row.NOME_CONTATO || '',
+        CARGO_CONTATO: row.CARGO_CONTATO || '',
+        PROXIMO_CONTATO: row.PROXIMO_CONTATO || '',
+        BENEFICIOS: row.BENEFICIOS || '',
+        FLAG_ATIVA: Number(row.FLAG_ATIVA || 0)
+    };
+}
+
+function getProspectionSearchRows() {
+    return prospeccoesDb.prepare(`
+        SELECT
+            p.CNPJ,
+            p.DADOS_EMPRESA,
+            p.OBSERVACOES,
+            p.NOME_CONTATO,
+            p.CARGO_CONTATO,
+            p.PROXIMO_CONTATO,
+            p.BENEFICIOS,
+            p.TELEFONE_CONTATO,
+            p.EMAIL_CONTATO,
+            COALESCE(flags.FLAG_ATIVA, 0) AS FLAG_ATIVA
+        FROM PROSPECCOES p
+        LEFT JOIN EMPRESAS_FLAGS flags
+            ON flags.CNPJ = p.CNPJ
+    `).all().map(normalizeProspectionSearchRow);
+}
+
+function includesNormalized(value, term) {
+    return normalizeText(value).includes(normalizeText(term));
+}
+
+function matchesBooleanAvailability(value, expected) {
+    const hasValue = value !== null && value !== undefined && String(value).trim() !== '' && String(value) !== '0';
+    return expected ? hasValue : !hasValue;
+}
+
+function matchesProspectionFilters(row, url) {
+    const params = url.searchParams;
+    const q = params.get('q');
+    const dataTableSearch = params.get('search[value]');
+    const uf = params.get('uf');
+    const municipio = params.get('municipio');
+    const cnae = params.get('cnae');
+    const situacao = params.get('situacao');
+    const matrizFilial = params.get('matrizFilial');
+    const mei = params.get('mei');
+    const simples = params.get('simples');
+    const aberturaInicio = params.get('aberturaInicio');
+    const aberturaFim = params.get('aberturaFim');
+    const capitalMin = params.get('capitalMin');
+    const capitalMax = params.get('capitalMax');
+    const temEmail = parseBooleanFlag(params.get('temEmail'));
+    const temTelefone = parseBooleanFlag(params.get('temTelefone'));
+    const tipoTelefone = params.get('tipoTelefone');
+    const flagFilter = getFlagFilter(params);
+    const cnpj = String(row.CNPJ || '').replace(/\D/g, '');
+
+    for (const term of [q, dataTableSearch].filter(Boolean)) {
+        const trimmed = String(term).trim();
+        const digits = trimmed.replace(/\D/g, '');
+        const matchesText = includesNormalized(row.RAZAO_SOCIAL, trimmed)
+            || includesNormalized(row.NOME_FANTASIA, trimmed)
+            || includesNormalized(row.NOME_CONTATO, trimmed)
+            || includesNormalized(row.CARGO_CONTATO, trimmed)
+            || cnpj.includes(digits || trimmed);
+
+        if (digits.length === 14 && cnpj !== digits) {
+            return false;
+        }
+
+        if (digits.length === 8 && cnpj.slice(0, 8) !== digits) {
+            return false;
+        }
+
+        if (digits.length !== 14 && digits.length !== 8 && !matchesText) {
+            return false;
+        }
+    }
+
+    if (uf && String(row.UF || '').toUpperCase() !== uf.toUpperCase()) {
+        return false;
+    }
+
+    if (municipio) {
+        const municipioTerm = String(municipio).trim();
+        const municipioMatches = String(row.MUNICIPIO || '') === municipioTerm
+            || includesNormalized(row.MUNICIPIO_DESCRICAO, municipioTerm);
+
+        if (!municipioMatches) {
+            return false;
+        }
+    }
+
+    if (cnae) {
+        const cnaeDigits = String(cnae).replace(/\D/g, '');
+        const cnaeMatches = String(row.CNAE_FISCAL_PRINCIPAL || '').includes(cnaeDigits || String(cnae).trim())
+            || includesNormalized(row.CNAE_FISCAL_PRINCIPAL_DESCRICAO, cnae);
+
+        if (!cnaeMatches) {
+            return false;
+        }
+    }
+
+    if (situacao && row.SITUACAO_CADASTRAL && String(row.SITUACAO_CADASTRAL) !== situacao) {
+        return false;
+    }
+
+    if (matrizFilial && row.IDENTIFICADOR_MATRIZ_FILIAL && String(row.IDENTIFICADOR_MATRIZ_FILIAL) !== matrizFilial) {
+        return false;
+    }
+
+    if (mei && String(row.OPCAO_PELO_MEI || '').toUpperCase() !== mei.toUpperCase()) {
+        return false;
+    }
+
+    if (simples && String(row.OPCAO_PELO_SIMPLES || '').toUpperCase() !== simples.toUpperCase()) {
+        return false;
+    }
+
+    if (aberturaInicio && String(row.DATA_INICIO_ATIVIDADE || '') < aberturaInicio.replace(/\D/g, '')) {
+        return false;
+    }
+
+    if (aberturaFim && String(row.DATA_INICIO_ATIVIDADE || '') > aberturaFim.replace(/\D/g, '')) {
+        return false;
+    }
+
+    if (capitalMin && Number(row.CAPITAL_SOCIAL || 0) < Number(capitalMin)) {
+        return false;
+    }
+
+    if (capitalMax && Number(row.CAPITAL_SOCIAL || 0) > Number(capitalMax)) {
+        return false;
+    }
+
+    if (temEmail !== null && !matchesBooleanAvailability(row.EMAIL, temEmail)) {
+        return false;
+    }
+
+    if (temTelefone !== null && !matchesBooleanAvailability(`${row.TELEFONE_1 || ''}${row.TELEFONE_2 || ''}`, temTelefone)) {
+        return false;
+    }
+
+    if (tipoTelefone) {
+        const phones = [row.TELEFONE_1, row.TELEFONE_2].map((value) => String(value || '').replace(/\D/g, ''));
+        const hasMobile = phones.some((phone) => phone.length >= 9 && phone.startsWith('9'));
+        const hasFixed = phones.some((phone) => phone.length >= 8 && !phone.startsWith('9'));
+
+        if ((tipoTelefone === 'celular' && !hasMobile) || (tipoTelefone === 'fixo' && !hasFixed)) {
+            return false;
+        }
+    }
+
+    if (flagFilter === 'marcadas' && Number(row.FLAG_ATIVA || 0) !== 1) {
+        return false;
+    }
+
+    if (flagFilter === 'nao_marcadas' && Number(row.FLAG_ATIVA || 0) === 1) {
+        return false;
+    }
+
+    return true;
+}
+
+function sortProspectionSearchRows(rows, url) {
+    const orderColumnIndex = Number(url.searchParams.get('order[0][column]'));
+    const direction = String(url.searchParams.get('order[0][dir]') || 'asc').toLowerCase() === 'desc' ? -1 : 1;
+
+    if (orderColumnIndex === 4) {
+        rows.sort((a, b) => String(a.UF || '').localeCompare(String(b.UF || '')) * direction);
+        return;
+    }
+
+    if (orderColumnIndex === 8) {
+        rows.sort((a, b) => String(a.DATA_INICIO_ATIVIDADE || '').localeCompare(String(b.DATA_INICIO_ATIVIDADE || '')) * direction);
+        return;
+    }
+
+    rows.sort((a, b) => String(b.PROXIMO_CONTATO || b.DATA_INICIO_ATIVIDADE || '').localeCompare(String(a.PROXIMO_CONTATO || a.DATA_INICIO_ATIVIDADE || '')));
+}
+
+function searchProspections(res, url, start) {
+    const isDataTable = url.searchParams.has('draw');
+    const limit = clampLimit(isDataTable ? url.searchParams.get('length') : url.searchParams.get('limit'));
+    const offset = clampOffset(isDataTable ? url.searchParams.get('start') : url.searchParams.get('offset'));
+    const rows = getProspectionSearchRows().filter((row) => matchesProspectionFilters(row, url));
+
+    sortProspectionSearchRows(rows, url);
+
+    if (isDataTable) {
+        const page = rows.slice(offset, offset + limit);
+
+        json(res, 200, {
+            draw: Math.max(0, Number(url.searchParams.get('draw') || 0)),
+            recordsTotal: rows.length,
+            recordsFiltered: rows.length,
+            data: page,
+            elapsedMs: Date.now() - start,
+            exactCount: true,
+            hasMore: offset + page.length < rows.length,
+            pageSize: limit,
+            offset
+        });
+        return;
+    }
+
+    json(res, 200, {
+        elapsedMs: Date.now() - start,
+        limit,
+        offset,
+        count: Math.max(0, rows.length - offset),
+        rows: rows.slice(offset, offset + limit)
+    });
+}
+
+function listProspectionMunicipios(uf, searchTerm) {
+    const normalizedUf = String(uf || '').trim().toUpperCase();
+    const normalizedTerm = normalizeText(searchTerm || '');
+    const seen = new Set();
+
+    return getProspectionSearchRows()
+        .filter((row) => !normalizedUf || String(row.UF || '').toUpperCase() === normalizedUf)
+        .map((row) => ({
+            codigo: String(row.MUNICIPIO || row.MUNICIPIO_DESCRICAO || '').trim(),
+            nome: String(row.MUNICIPIO_DESCRICAO || row.MUNICIPIO || '').trim()
+        }))
+        .filter((item) => item.nome)
+        .filter((item) => !normalizedTerm || includesNormalized(item.nome, normalizedTerm))
+        .filter((item) => {
+            const key = `${item.codigo}|${item.nome}`;
+
+            if (seen.has(key)) {
+                return false;
+            }
+
+            seen.add(key);
+            return true;
+        })
+        .sort((a, b) => a.nome.localeCompare(b.nome))
+        .slice(0, 6000);
+}
+
+function listProspectionCnaes(searchTerm) {
+    const term = String(searchTerm || '').trim();
+    const normalizedTerm = normalizeText(term);
+    const codeTerm = term.replace(/\D/g, '');
+    const seen = new Set();
+
+    if (!normalizedTerm && !codeTerm) {
+        return [];
+    }
+
+    return getProspectionSearchRows()
+        .map((row) => ({
+            codigo: String(row.CNAE_FISCAL_PRINCIPAL || '').trim(),
+            descricao: String(row.CNAE_FISCAL_PRINCIPAL_DESCRICAO || '').trim()
+        }))
+        .filter((item) => item.codigo || item.descricao)
+        .filter((item) => (
+            (codeTerm && item.codigo.includes(codeTerm))
+            || includesNormalized(item.descricao, term)
+            || includesNormalized(item.codigo, term)
+        ))
+        .filter((item) => {
+            const key = `${item.codigo}|${item.descricao}`;
+
+            if (seen.has(key)) {
+                return false;
+            }
+
+            seen.add(key);
+            return true;
+        })
+        .sort((a, b) => a.descricao.localeCompare(b.descricao))
+        .slice(0, 20)
+        .map((item) => ({
+            ...item,
+            label: [item.codigo, item.descricao].filter(Boolean).join(' - ')
+        }));
+}
+
 function buildSelectedExportSearch(cnpjs) {
     return {
         sql: `
@@ -2465,12 +3003,29 @@ async function exportCompaniesXls(req, res) {
     res.end('</Table></Worksheet></Workbook>');
 }
 
-function searchCompanies(req, res, url) {
-    if (!requireMainDatabase(res)) {
+async function searchCompanies(req, res, url) {
+    const start = Date.now();
+    const source = getSearchSource(url);
+
+    if (source === 'prospeccoes') {
+        searchProspections(res, url, start);
         return;
     }
 
-    const start = Date.now();
+    if (rfbSearchServiceUrl) {
+        try {
+            json(res, 200, await fetchRfbSearchFromService(url));
+        } catch {
+            jsonError(res, 503, rfbSearchServiceUnavailableMessage, null, rfbSearchServiceUnavailableMessage, {
+                rfbServiceConfigured: true
+            });
+        }
+        return;
+    }
+
+    if (!requireMainDatabase(res)) {
+        return;
+    }
 
     if (url.searchParams.has('draw')) {
         searchCompaniesDataTable(res, url, start);
@@ -2511,44 +3066,204 @@ function searchCompaniesDataTable(res, url, start) {
 }
 
 function health(res) {
-    const counts = db
-        ? db.prepare(`
-            SELECT
-                (SELECT COUNT(*) FROM EMPRESAS) AS empresas,
-                (SELECT COUNT(*) FROM ESTABELECIMENTOS) AS estabelecimentos,
-                (SELECT COUNT(*) FROM SIMPLES) AS simples
-        `).get()
-        : null;
-
     json(res, 200, {
         ok: true,
-        database: bancoPath,
-        databaseAvailable: Boolean(db),
-        writableDatabases: {
-            prospeccoes: prospeccoesPath,
-            importacao: importacaoPath
+        app: {
+            name: appMetadata.name,
+            version: appMetadata.version
         },
-        counts
+        databaseAvailable: Boolean(db),
+        generatedAt: new Date().toISOString()
     });
 }
 
 function listMunicipiosHandler(res, url) {
-    if (!requireMainDatabase(res)) {
-        return;
-    }
-
     const uf = url.searchParams.get('uf');
     const q = url.searchParams.get('q');
-    json(res, 200, listMunicipios(uf, q));
+    json(res, 200, listProspectionMunicipios(uf, q));
 }
 
 function listCnaesHandler(res, url) {
-    if (!requireMainDatabase(res)) {
+    const q = url.searchParams.get('q');
+    json(res, 200, listProspectionCnaes(q));
+}
+
+function publicAppMetadata() {
+    return {
+        name: appMetadata.name,
+        version: appMetadata.version,
+        build: appMetadata.build || null,
+        environment: appMetadata.environment,
+        publishedAt: appMetadata.publishedAt || null
+    };
+}
+
+function appMetadataHandler(res) {
+    json(res, 200, {
+        app: publicAppMetadata()
+    });
+}
+
+function featureCatalogHandler(res) {
+    json(res, 200, {
+        features: featureCatalog
+    });
+}
+
+function getAuthContext(req) {
+    return auth.getAuthContext(adminDb, req);
+}
+
+function requireAuthenticated(req, res, context) {
+    const authContext = getAuthContext(req);
+
+    if (!authContext) {
+        jsonError(res, 401, 'Acesso negado. Faca login para continuar.', context, 'Rota administrativa sem sessao valida.');
+        return null;
+    }
+
+    return authContext;
+}
+
+function requirePermission(req, res, context, permissionCode) {
+    const authContext = requireAuthenticated(req, res, context);
+
+    if (!authContext) {
+        return null;
+    }
+
+    if (!auth.hasPermission(authContext, permissionCode)) {
+        auth.auditSecurity(adminDb, context, {
+            evento: 'ACESSO_NEGADO_PERMISSAO',
+            resultado: 'FALHA',
+            usuarioId: authContext.usuarioId,
+            organizacaoId: authContext.organizacaoId,
+            email: authContext.user?.email,
+            detalhes: { permissao: permissionCode }
+        });
+        jsonError(res, 403, 'Acesso negado. Permissao insuficiente.', context, `Permissao ausente: ${permissionCode}.`);
+        return null;
+    }
+
+    return authContext;
+}
+
+async function authLoginHandler(req, res, context) {
+    if (req.method !== 'POST') {
+        jsonError(res, 405, 'Metodo nao permitido.', context, 'Metodo invalido para login.');
         return;
     }
 
-    const q = url.searchParams.get('q');
-    json(res, 200, listCnaes(q));
+    const body = await readJsonBody(req);
+    const result = await auth.login(adminDb, req, body, context);
+
+    if (!result.ok) {
+        jsonError(res, result.status, result.message, context, result.message, {
+            email: auth.normalizeEmail(body.email || body.login)
+        });
+        return;
+    }
+
+    res.setHeader('Set-Cookie', auth.buildSessionCookie(result.token, result.expiresAt));
+    json(res, 200, {
+        ok: true,
+        user: result.user,
+        expiresAt: result.expiresAt.toISOString()
+    });
+}
+
+function authMeHandler(req, res) {
+    const authContext = getAuthContext(req);
+
+    json(res, 200, {
+        authenticated: Boolean(authContext),
+        user: authContext?.user || null
+    });
+}
+
+function authLogoutHandler(req, res, context) {
+    if (req.method !== 'POST') {
+        jsonError(res, 405, 'Metodo nao permitido.', context, 'Metodo invalido para logout.');
+        return;
+    }
+
+    const authContext = getAuthContext(req);
+    auth.logout(adminDb, req, authContext, context);
+    res.setHeader('Set-Cookie', auth.buildClearSessionCookie());
+    json(res, 200, { ok: true });
+}
+
+async function adminUsersHandler(req, res, context) {
+    if (req.method === 'GET') {
+        const authContext = requirePermission(req, res, context, 'USUARIO_VISUALIZAR');
+
+        if (!authContext) {
+            return;
+        }
+
+        json(res, 200, {
+            users: auth.listUsers(adminDb, authContext.organizacaoId)
+        });
+        return;
+    }
+
+    if (req.method === 'POST') {
+        const authContext = requirePermission(req, res, context, 'USUARIO_CADASTRAR');
+
+        if (!authContext) {
+            return;
+        }
+
+        const body = await readJsonBody(req);
+        const result = await auth.createUser(adminDb, body, authContext, context);
+
+        if (!result.ok) {
+            jsonError(res, result.status, result.message, context, result.message);
+            return;
+        }
+
+        json(res, 201, {
+            ok: true,
+            user: result.user
+        });
+        return;
+    }
+
+    jsonError(res, 405, 'Metodo nao permitido.', context, 'Metodo invalido para usuarios administrativos.');
+}
+
+function adminProfilesHandler(req, res, context) {
+    if (req.method !== 'GET') {
+        jsonError(res, 405, 'Metodo nao permitido.', context, 'Metodo invalido para perfis administrativos.');
+        return;
+    }
+
+    const authContext = requirePermission(req, res, context, 'PERFIL_VISUALIZAR');
+
+    if (!authContext) {
+        return;
+    }
+
+    json(res, 200, {
+        profiles: auth.listProfiles(adminDb, authContext.organizacaoId)
+    });
+}
+
+function adminPermissionsHandler(req, res, context) {
+    if (req.method !== 'GET') {
+        jsonError(res, 405, 'Metodo nao permitido.', context, 'Metodo invalido para permissoes administrativas.');
+        return;
+    }
+
+    const authContext = requirePermission(req, res, context, 'PERMISSAO_VISUALIZAR');
+
+    if (!authContext) {
+        return;
+    }
+
+    json(res, 200, {
+        permissions: auth.listPermissions(adminDb, featureCatalog)
+    });
 }
 
 function serveStatic(res, pathname) {
@@ -2576,10 +3291,66 @@ function serveStatic(res, pathname) {
 
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    const context = createRequestContext(req, url);
+
+    res.correlationId = context.correlationId;
+    res.requestMethod = context.method;
+    res.requestRoute = context.route;
+    res.setHeader('X-Correlation-ID', context.correlationId);
+    res.on('finish', () => {
+        const statusCode = res.statusCode;
+        const level = statusCode >= 500 ? 'ERROR' : statusCode >= 400 ? 'WARN' : 'INFO';
+        const result = statusCode >= 500 ? 'ERRO' : statusCode >= 400 ? 'REJEITADO' : 'SUCESSO';
+
+        logTechnical(level, context, result, 'Requisicao finalizada.', {
+            statusCode,
+            elapsedMs: Date.now() - context.startedAt.getTime()
+        });
+    });
 
     try {
         if (url.pathname === '/api/health') {
             health(res);
+            return;
+        }
+
+        if (url.pathname === '/api/app-metadata') {
+            appMetadataHandler(res);
+            return;
+        }
+
+        if (url.pathname === '/api/features') {
+            featureCatalogHandler(res);
+            return;
+        }
+
+        if (url.pathname === '/api/auth/login') {
+            await authLoginHandler(req, res, context);
+            return;
+        }
+
+        if (url.pathname === '/api/auth/me') {
+            authMeHandler(req, res);
+            return;
+        }
+
+        if (url.pathname === '/api/auth/logout') {
+            authLogoutHandler(req, res, context);
+            return;
+        }
+
+        if (url.pathname === '/api/admin/users') {
+            await adminUsersHandler(req, res, context);
+            return;
+        }
+
+        if (url.pathname === '/api/admin/profiles') {
+            adminProfilesHandler(req, res, context);
+            return;
+        }
+
+        if (url.pathname === '/api/admin/permissions') {
+            adminPermissionsHandler(req, res, context);
             return;
         }
 
@@ -2589,7 +3360,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (url.pathname === '/api/empresas') {
-            searchCompanies(req, res, url);
+            await searchCompanies(req, res, url);
             return;
         }
 
@@ -2640,8 +3411,17 @@ const server = http.createServer(async (req, res) => {
 
         serveStatic(res, url.pathname);
     } catch (error) {
-        json(res, 500, {
-            error: error.message
+        if (res.headersSent) {
+            logTechnical('ERROR', context, 'ERRO', error.message, {
+                errorName: error.name,
+                responseAlreadyStarted: true
+            });
+            res.destroy();
+            return;
+        }
+
+        jsonError(res, 500, genericErrorMessage, context, error.message, {
+            errorName: error.name
         });
     }
 });
@@ -2656,5 +3436,6 @@ process.on('SIGINT', () => {
     }
     prospeccoesDb.close();
     importacaoDb.close();
+    adminDb.close();
     server.close(() => process.exit(0));
 });

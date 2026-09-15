@@ -47,3 +47,9 @@ Filtros suportados:
 - `temTelefone`
 - `limit`
 - `offset`
+
+## Deploy no Railway
+
+Consulte [RAILWAY_DEPLOY.md](RAILWAY_DEPLOY.md) para configurar o servico, o Volume persistente e os bancos SQLite.
+
+O comando de producao e `npm start`. O endpoint de health check e `/api/health`.

@@ -1,102 +1,63 @@
 # Deploy do LeadBenefits CRM no Railway
 
-## Arquivos e diretorios para subir
+## Configuracao do servico
 
-Suba a pasta `RAILWAY_UPLOAD_LEADBENEFITS` para o GitHub ou use essa pasta com o Railway CLI.
+O Railway deve usar o repositorio na raiz deste projeto. A configuracao versionada ja define:
 
-Ela deve conter:
+- Build: Nixpacks
+- Start command: `npm start`
+- Health check: `/api/health`
+- Node.js: `22.x`
 
-```text
-railway.json
-package.json
-package-lock.json
-.gitignore
-RAILWAY_DEPLOY.md
-crm_importacao_empresas/
-```
+Nao configure o `start-crm.cmd` no Railway; ele e somente para o ambiente Windows local.
 
-## Configuracao no Railway
+## Volume e bancos
 
-O Railway deve detectar Node.js automaticamente.
-
-Use:
+Crie um Volume no servico e monte-o em `/data`. Configure estas variaveis no Railway:
 
 ```text
-Start command: npm start
-Healthcheck path: /api/health
-```
-
-Esses valores ja estao definidos em `railway.json`.
-
-## Banco de dados SQLite
-
-O CRM usa estes bancos:
-
-```text
-LeadBenefits.sqlite
-crm_importacao_empresas/prospeccoes.sqlite
-crm_importacao_empresas/CRM_importacao.sqlite
-```
-
-Para nao perder dados no Railway, crie um Volume no servico e monte em:
-
-```text
-/data
-```
-
-Depois configure estas variaveis no Railway:
-
-```text
-LEADBENEFITS_DB=/data/LeadBenefits.sqlite
+NODE_ENV=production
+LEADBENEFITS_DATA_DIR=/data
 LEADBENEFITS_PROSPECCOES_DB=/data/prospeccoes.sqlite
 LEADBENEFITS_IMPORTACAO_DB=/data/CRM_importacao.sqlite
-CRM_SECURE_COOKIE=1
+LEADBENEFITS_ADMIN_DB=/data/LeadBenefits_admin.sqlite
+RFB_SEARCH_SERVICE_URL=https://SEU-TUNEL.trycloudflare.com
 ```
 
-O backend tambem reconhece automaticamente `RAILWAY_VOLUME_MOUNT_PATH`.
-Se houver volume, ele usa esse caminho como local dos bancos.
+O arquivo `LeadBenefits.sqlite` nao deve ser enviado ao Railway quando a pesquisa RFB estiver sendo atendida pelo servico remoto. Nesse caso, configure `RFB_SEARCH_SERVICE_URL` com a URL do servico que acessa a base RFB local. Os demais bancos sao gravaveis e devem permanecer no Volume para que cadastros, historico, importacoes e usuarios nao sejam perdidos em um novo deploy.
 
-## Passo obrigatorio
+Quando `RFB_SEARCH_SERVICE_URL` estiver configurada, o backend do CRM encaminha os filtros de `/api/empresas` ao servico remoto. A URL nao e exposta ao navegador. Se o servico estiver indisponivel, a API retorna HTTP 503 com uma mensagem controlada.
 
-O arquivo principal `LeadBenefits.sqlite` nao foi encontrado neste workspace.
-
-Antes do deploy final funcionar com pesquisa de empresas, envie esse arquivo para:
+Envie os bancos pelo Railway CLI, conforme o ambiente configurado:
 
 ```text
-/data/LeadBenefits.sqlite
+railway volume files upload .\prospeccoes.sqlite /data/prospeccoes.sqlite
+railway volume files upload .\CRM_importacao.sqlite /data/CRM_importacao.sqlite
+railway volume files upload .\LeadBenefits_admin.sqlite /data/LeadBenefits_admin.sqlite
 ```
 
-Voce pode fazer isso pelo Railway CLI:
+Nao envie arquivos `-wal` ou `-shm` separadamente.
+
+## Administrador inicial
+
+Execute o bootstrap uma vez apontando para o Volume e informe credenciais fortes por variaveis temporarias ou pelo modo interativo:
 
 ```text
-railway volume files upload ./LeadBenefits.sqlite /data/LeadBenefits.sqlite
+railway run npm run bootstrap:admin
 ```
 
-Ou, se o arquivo nao for muito grande, coloque `LeadBenefits.sqlite` na raiz da pasta enviada antes do deploy.
+Remova as variaveis `BOOTSTRAP_ADMIN_*` depois da criacao do usuario. Nao use credenciais de desenvolvimento em producao.
 
-## Nao subir
+## Validacao
 
-Nao suba:
+Depois do deploy, confirme:
 
 ```text
-node_modules/
-*.sqlite-wal
-*.sqlite-shm
-*test*.sqlite
-*teste*.sqlite
-*.bat
-*.cmd
-netlify/
-netlify.toml
+GET https://SEU-DOMINIO/api/health
 ```
 
-## Credencial inicial
+A resposta deve conter `"ok": true`. Com o banco principal carregado, `databaseAvailable` tambem deve ser `true`.
 
-Quando o banco administrativo for criado pela primeira vez:
+## Pendencia conhecida
 
-```text
-E-mail: admin@leadbenefits.local
-Senha: Alterar@123
-```
-
-Troque essa senha antes de usar em producao.
+O pacote `xlsx@0.18.5` possui alertas de Prototype Pollution e ReDoS reportados pelo `npm audit`, sem correcao automatica disponivel. A importacao XLSX deve ser tratada como pendencia de seguranca antes de ampliar o acesso publico a esse recurso.

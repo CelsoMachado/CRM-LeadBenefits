@@ -40,10 +40,13 @@ const dashboardRefreshButton = document.querySelector('#dashboard-refresh');
 const dashboardAtrasadosCount = document.querySelector('#dashboard-atrasados-count');
 const dashboardHojeCount = document.querySelector('#dashboard-hoje-count');
 const dashboardAmanhaCount = document.querySelector('#dashboard-amanha-count');
+const dashboardHojeImportadas = document.querySelector('#dashboard-hoje-importadas');
+const dashboardContatosHojeCount = document.querySelector('#dashboard-contatos-hoje-count');
 const dashboardAtrasadosList = document.querySelector('#dashboard-atrasados-list');
 const dashboardAtrasadosAllButton = document.querySelector('#dashboard-atrasados-all');
 const dashboardHojeList = document.querySelector('#dashboard-hoje-list');
 const dashboardAmanhaList = document.querySelector('#dashboard-amanha-list');
+const dashboardContatosHojeList = document.querySelector('#dashboard-contatos-hoje-list');
 const overdueModal = document.querySelector('#overdue-modal');
 const overdueModalClose = document.querySelector('#overdue-modal-close');
 const overdueModalList = document.querySelector('#overdue-modal-list');
@@ -95,11 +98,24 @@ const switchInterestInput = document.querySelector('#switch-interest');
 const contactHistoryEl = document.querySelector('#contact-history');
 const nextContactField = document.querySelector('.next-contact-field');
 const historyTitle = document.querySelector('.history-column > strong');
+const appVersionEl = document.querySelector('#app-version');
+const loginPage = document.querySelector('#login-page');
+const appShell = document.querySelector('#app-shell');
+const loginForm = document.querySelector('#login-form');
+const loginEmail = document.querySelector('#login-email');
+const loginPassword = document.querySelector('#login-password');
+const loginSubmit = document.querySelector('#login-submit');
+const loginStatus = document.querySelector('#login-status');
+const authenticatedUser = document.querySelector('#authenticated-user');
+const logoutButton = document.querySelector('#logout-button');
 let municipalityRequestId = 0;
 let cnaeRequestId = 0;
 let resultsTable;
 let importHistoryDataTable;
+let appInitialized = false;
+let currentAuthUser = null;
 let hasSearched = false;
+let currentSearchSource = 'rfb';
 let currentCompany = null;
 let currentProspectionState = { draftHtml: '', history: [] };
 let lastFocusedElement = null;
@@ -205,6 +221,168 @@ function formatDateTime(value) {
     });
 }
 
+async function loadAppMetadata() {
+    if (!appVersionEl) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/app-metadata');
+        const payload = await response.json();
+
+        if (!response.ok) {
+            throw new Error(payload.error || 'Erro ao carregar versao.');
+        }
+
+        const app = payload.app || {};
+        const name = app.name || 'LeadBenefits';
+        const version = app.version || '-';
+
+        appVersionEl.textContent = `${name.replace(/\s+CRM$/i, '')} v${version}`;
+
+        if (app.build || app.environment) {
+            appVersionEl.title = [
+                app.environment ? `Ambiente: ${app.environment}` : '',
+                app.build ? `Build: ${app.build}` : ''
+            ].filter(Boolean).join(' | ');
+        }
+    } catch {
+        appVersionEl.textContent = 'LeadBenefits v-';
+    }
+}
+
+function setLoginStatus(message = '', isError = false) {
+    if (!loginStatus) {
+        return;
+    }
+
+    loginStatus.textContent = message;
+    loginStatus.classList.toggle('is-error', isError);
+}
+
+function showLogin(message = '') {
+    currentAuthUser = null;
+
+    if (loginPage) {
+        loginPage.hidden = false;
+    }
+
+    if (appShell) {
+        appShell.hidden = true;
+    }
+
+    if (authenticatedUser) {
+        authenticatedUser.textContent = '-';
+    }
+
+    setLoginStatus(message);
+    loginEmail?.focus();
+}
+
+function showApp(user) {
+    currentAuthUser = user || null;
+
+    if (loginPage) {
+        loginPage.hidden = true;
+    }
+
+    if (appShell) {
+        appShell.hidden = false;
+    }
+
+    if (authenticatedUser) {
+        const organization = user?.organizacao?.nome ? ` - ${user.organizacao.nome}` : '';
+        authenticatedUser.textContent = `${user?.nome || user?.email || 'Usuario'}${organization}`;
+        authenticatedUser.title = user?.perfil?.codigo || '';
+    }
+}
+
+function initializeApp() {
+    if (appInitialized) {
+        return;
+    }
+
+    initializeDataTable();
+    updateMunicipioAvailability();
+    updateSelectionCount();
+    renderSelectedLeads();
+    renderCompanyNotes(null);
+    loadDashboard();
+    handleNavigation();
+    appInitialized = true;
+}
+
+async function initializeAuthentication() {
+    await loadAppMetadata();
+
+    try {
+        const response = await fetch('/api/auth/me');
+        const payload = await response.json();
+
+        if (!response.ok || !payload.authenticated) {
+            showLogin();
+            return;
+        }
+
+        showApp(payload.user);
+        initializeApp();
+    } catch {
+        showLogin('Nao foi possivel validar a sessao.');
+    }
+}
+
+async function handleLogin(event) {
+    event.preventDefault();
+
+    if (!loginForm || !loginEmail || !loginPassword) {
+        return;
+    }
+
+    setLoginStatus('Entrando...');
+
+    if (loginSubmit) {
+        loginSubmit.disabled = true;
+    }
+
+    try {
+        const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                email: loginEmail.value,
+                password: loginPassword.value
+            })
+        });
+        const payload = await response.json();
+
+        if (!response.ok) {
+            throw new Error(payload.error || 'Nao foi possivel entrar.');
+        }
+
+        loginPassword.value = '';
+        showApp(payload.user);
+        initializeApp();
+    } catch (error) {
+        setLoginStatus(error.message, true);
+    } finally {
+        if (loginSubmit) {
+            loginSubmit.disabled = false;
+        }
+    }
+}
+
+async function handleLogout() {
+    try {
+        await fetch('/api/auth/logout', {
+            method: 'POST'
+        });
+    } finally {
+        showLogin('Sessao encerrada.');
+    }
+}
+
 function setMainView(view) {
     const showImportacao = view === 'importacao';
     const showCadastro = view === 'cadastrar';
@@ -219,10 +397,6 @@ function setMainView(view) {
 
     if (cadastroEmpresaPage) {
         cadastroEmpresaPage.hidden = !showCadastro;
-    }
-
-    if (advancedSearchToggle) {
-        advancedSearchToggle.hidden = true;
     }
 
     if (showImportacao) {
@@ -536,21 +710,27 @@ function toDatabaseDate(value) {
     return `${digits.slice(4, 8)}${digits.slice(2, 4)}${digits.slice(0, 2)}`;
 }
 
-function syncQueryFilter() {
+function syncQueryFilter(includeFantasia = true) {
     if (!queryFilter) {
         return;
     }
 
     queryFilter.value = cnpjFilter.value.trim()
         || razaoFilter.value.trim()
-        || fantasiaFilter.value.trim();
+        || (includeFantasia ? fantasiaFilter.value.trim() : '');
 }
 
-function appendFormFilters(params) {
-    syncQueryFilter();
+function appendFormFilters(params, source = currentSearchSource) {
+    const includeAdvancedFilters = source === 'prospeccoes';
+
+    syncQueryFilter(includeAdvancedFilters);
     const data = new FormData(form);
 
     for (const [key, value] of data.entries()) {
+        if (!includeAdvancedFilters && key !== 'q') {
+            continue;
+        }
+
         let normalizedValue = String(value).trim();
 
         if (key === 'aberturaInicio' || key === 'aberturaFim') {
@@ -561,6 +741,8 @@ function appendFormFilters(params) {
             params.set(key, normalizedValue);
         }
     }
+
+    params.set('source', source);
 }
 
 function syncSwitchConflicts(input) {
@@ -599,6 +781,22 @@ function buildDataTableParams(data) {
     appendFormFilters(params);
 
     return params;
+}
+
+function getSubmitSearchSource(event) {
+    if (event.submitter?.dataset.searchSource) {
+        return event.submitter.dataset.searchSource;
+    }
+
+    if (
+        advancedSearchPanel
+        && !advancedSearchPanel.hidden
+        && advancedSearchPanel.contains(document.activeElement)
+    ) {
+        return 'prospeccoes';
+    }
+
+    return 'rfb';
 }
 
 function updateMunicipioAvailability() {
@@ -668,7 +866,7 @@ function getDashboardCompanyRecord(contact) {
 function storeDashboardCompanyRecords(data) {
     dashboardCompanyRecords.clear();
 
-    for (const group of [data?.agenda?.atrasados, data?.agenda?.hoje, data?.agenda?.amanha]) {
+    for (const group of [data?.agenda?.atrasados, data?.agenda?.hoje, data?.agenda?.amanha, data?.agenda?.contatosHoje]) {
         for (const contact of group?.itens || []) {
             const cnpj = String(contact?.cnpj || '').replace(/\D/g, '');
 
@@ -713,7 +911,9 @@ function renderDashboardContactList(container, group, emptyText, showViewButton 
             <article class="dashboard-contact-card">
                 <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
                 <span>${escapeHtml(meta || '-')}</span>
-                <span>Proximo contato: ${escapeHtml(formatIsoDate(contact.proximoContato))}</span>
+                <span>${contact.contatoRealizadoEm
+                    ? `Contato registrado: ${escapeHtml(formatDashboardUpdatedAt(contact.contatoRealizadoEm))}`
+                    : `Proximo contato: ${escapeHtml(formatIsoDate(contact.proximoContato))}`}</span>
                 ${contact.telefone ? `<span>Telefone: ${escapeHtml(contact.telefone)}</span>` : ''}
                 ${person ? `<span>Contato: ${escapeHtml(person)}</span>` : ''}
                 ${contact.beneficios ? `<span>Beneficios: ${escapeHtml(contact.beneficios)}</span>` : ''}
@@ -754,9 +954,18 @@ function renderDashboard(data) {
         dashboardAmanhaCount.textContent = formatDashboardNumber(data?.agenda?.amanha?.total);
     }
 
+    if (dashboardHojeImportadas) {
+        dashboardHojeImportadas.textContent = `${formatDashboardNumber(data?.metricas?.empresasImportadas)} empresas importadas`;
+    }
+
+    if (dashboardContatosHojeCount) {
+        dashboardContatosHojeCount.textContent = formatDashboardNumber(data?.agenda?.contatosHoje?.total);
+    }
+
     renderDashboardContactList(dashboardAtrasadosList, data?.agenda?.atrasados, 'Nenhum contato atrasado', true);
     renderDashboardContactList(dashboardHojeList, data?.agenda?.hoje, 'Nenhum contato para hoje');
     renderDashboardContactList(dashboardAmanhaList, data?.agenda?.amanha, 'Nenhum contato para amanha');
+    renderDashboardContactList(dashboardContatosHojeList, data?.agenda?.contatosHoje, 'Nenhum contato registrado hoje');
 
     if (dashboardUpdatedAt) {
         const updatedAt = formatDashboardUpdatedAt(data?.geradoEm);
@@ -861,6 +1070,7 @@ async function loadDashboard() {
         renderDashboardContactList(dashboardAtrasadosList, null, 'Painel indisponivel');
         renderDashboardContactList(dashboardHojeList, null, 'Painel indisponivel');
         renderDashboardContactList(dashboardAmanhaList, null, 'Painel indisponivel');
+        renderDashboardContactList(dashboardContatosHojeList, null, 'Painel indisponivel');
     } finally {
         if (dashboardRefreshButton) {
             dashboardRefreshButton.disabled = false;
@@ -2602,10 +2812,14 @@ function initializeDataTable() {
 
 function search(event) {
     event.preventDefault();
+    currentSearchSource = getSubmitSearchSource(event);
     hasSearched = true;
     allFilteredSelectionActive = false;
 
-    closeAdvancedSearch();
+    if (currentSearchSource === 'rfb') {
+        closeAdvancedSearch();
+    }
+
     showResultsTable();
     resultsTable.ajax.reload();
 }
@@ -2624,6 +2838,11 @@ function closeAdvancedSearch() {
 
 if (advancedSearchToggle && advancedSearchPanel) {
     advancedSearchToggle.addEventListener('click', () => {
+        if (window.location.hash !== '#pesquisa-avancada') {
+            window.location.hash = '#pesquisa-avancada';
+            return;
+        }
+
         const willOpen = advancedSearchPanel.hidden;
 
         advancedSearchPanel.hidden = !willOpen;
@@ -2810,7 +3029,15 @@ clearSelectionButton.addEventListener('click', () => {
     clearAllSelections();
 });
 
-dashboardRefreshButton?.addEventListener('click', loadDashboard);
+dashboardRefreshButton?.addEventListener('click', () => {
+    if (window.location.hash !== '#inicio') {
+        window.location.hash = '#inicio';
+        return;
+    }
+
+    setMainView('inicio');
+    loadDashboard();
+});
 dashboardAtrasadosAllButton?.addEventListener('click', openOverdueModal);
 overdueModalClose?.addEventListener('click', closeOverdueModal);
 manualCompanyOpenButton?.addEventListener('click', openManualCompanyModal);
@@ -3051,12 +3278,15 @@ prospectionForm.addEventListener('submit', async (event) => {
     }
 });
 
-window.addEventListener('hashchange', handleNavigation);
+window.addEventListener('hashchange', () => {
+    if (!appShell || appShell.hidden) {
+        return;
+    }
 
-initializeDataTable();
-updateMunicipioAvailability();
-updateSelectionCount();
-renderSelectedLeads();
-renderCompanyNotes(null);
-loadDashboard();
-handleNavigation();
+    handleNavigation();
+});
+
+loginForm?.addEventListener('submit', handleLogin);
+logoutButton?.addEventListener('click', handleLogout);
+
+initializeAuthentication();
